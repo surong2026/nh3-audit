@@ -10,6 +10,7 @@ from ui.page_pretreatment import build_pretreatment_from_form
 from ui.page_analysis import build_analysis_from_form
 from ui.page_report import show_report
 from engine.auditor import Auditor
+from utils.pdf_parser import parse_pdf
 
 st.set_page_config(
     page_title="氨氮分析记录审核系统 — HJ 535-2009",
@@ -29,6 +30,7 @@ def init_session_state():
         "audit_results": {},
         "full_report": None,
         "current_tab": "标准曲线",
+        "pdf_parsed": False,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -72,26 +74,64 @@ def main():
         if tab == "4. 📋 审核报告":
             st.markdown("---")
             if st.button("🔄 执行全部审核", use_container_width=True, type="primary"):
-                record = st.session_state.record
-                run_full_audit(record)
+                run_full_audit(st.session_state.record)
                 st.success("审核完成！")
 
         st.markdown("---")
+        st.caption("📤 PDF 上传审核")
+
+        pdf_file = st.file_uploader("上传分析记录 PDF", type=["pdf"],
+                                    key="pdf_uploader",
+                                    help="上传 HJ 535-2009 氨氮分析记录 PDF，系统自动提取数据并审核")
+
+        if pdf_file is not None:
+            try:
+                record = parse_pdf(pdf_file.getvalue(), pdf_file.name)
+                st.session_state.record = record
+                st.session_state.pdf_parsed = True
+
+                st.success(f"✅ 已解析: {pdf_file.name}")
+                with st.expander("📊 查看提取数据"):
+                    st.caption(f"**日期**: {record.analysis_date}")
+                    st.caption(f"**分析人**: {record.analyst}")
+                    st.caption(f"**方法**: {record.method_reference}")
+                    st.caption(f"**仪器**: {record.instrument_model}")
+                    st.caption(f"**波长/比色皿/显色**: {record.wavelength}nm / {record.cuvette_path}mm / {record.color_dev_time}min")
+                    st.caption(f"**校准曲线**: {len(record.calibration_curve.points)}点, "
+                              f"r={record.calibration_curve.correlation_r or '未提取'}")
+                    st.caption(f"**样品**: {len(record.samples)}个")
+                    st.caption(f"**质控样**: {len(record.qc_standards)}个")
+                    st.caption(f"**平行样**: {len(record.parallels)}个")
+
+                if st.button("⚡ 一键审核此 PDF", use_container_width=True, type="primary",
+                            key="pdf_audit_btn"):
+                    if not record.calibration_curve.points:
+                        st.error("未从 PDF 中提取到校准曲线数据，请检查 PDF 是否完整")
+                    else:
+                        run_full_audit(record)
+                        st.rerun()
+
+            except Exception as e:
+                st.error(f"PDF 解析失败: {e}")
+                st.info("请确认上传的是 HJ 535-2009 氨氮分析记录 PDF。也可手动填写各Tab页数据。")
+
+        st.markdown("---")
         st.caption("💾 数据管理")
+        save_name = st.text_input("保存名称", key="save_name", placeholder="如: 20260508-氨氮")
         col_s1, col_s2 = st.columns(2)
         with col_s1:
-            save_name = st.text_input("保存名称", key="save_name", placeholder="以日期命名")
-            if st.button("💾 保存", use_container_width=True):
+            if st.button("💾 保存记录", use_container_width=True):
                 record = st.session_state.record
-                name = save_name or record.analysis_date.isoformat() if record.analysis_date else "record"
+                name = save_name or (record.analysis_date.isoformat() if record.analysis_date else "record")
                 path = save_record(record, name)
                 st.success(f"已保存: {path}")
         with col_s2:
-            uploaded = st.file_uploader("加载记录", type=["json"], key="load_file")
-            if uploaded:
-                record = AnalysisRecord.from_dict(json.loads(uploaded))
+            json_file = st.file_uploader("加载 JSON 记录", type=["json"], key="load_json")
+            if json_file:
+                record = AnalysisRecord.from_dict(json.load(json_file))
                 st.session_state.record = record
-                st.success(f"已加载记录: {record.record_id or uploaded.name}")
+                st.session_state.pdf_parsed = False
+                st.success(f"已加载: {record.record_id or json_file.name}")
 
         st.markdown("---")
         st.caption("© 2026 实验室分析记录审核系统 v1.0")
