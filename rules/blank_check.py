@@ -46,8 +46,7 @@ class LabBlankRule(BaseAuditRule):
                                   limit=f"< {DETECTION_LIMIT} mg/L", hj_ref="7.3",
                                   detail="需先审核校准曲线后判断空白是否合格")]
 
-        blank_conc = calc_concentration(ab, 0, a, b, SAMPLE_VOLUME)
-
+        blank_conc = calc_concentration(ab, ab, a, b, SAMPLE_VOLUME)
         if blank_conc < DETECTION_LIMIT:
             return [self._pass(name="实验室空白", actual=f"{blank_conc:.4f} mg/L",
                               limit=f"< {DETECTION_LIMIT} mg/L", hj_ref="7.3")]
@@ -58,29 +57,36 @@ class LabBlankRule(BaseAuditRule):
 
 
 class FieldBlankRule(BaseAuditRule):
-    """C3: 全程序空白 < 检出限"""
+    """C3: 全程序空白 < 检出限 (实验室内部质控，HJ 535-2009 未明确要求)"""
     code = "C3"
     category = "空白检验"
 
     def audit(self, record: AnalysisRecord) -> list:
         if record.field_blank_absorbance is None:
             return [self._info(name="全程序/现场空白", actual="未检测",
-                               limit=f"< {DETECTION_LIMIT} mg/L", hj_ref="7.2",
-                               detail="未填写全程序空白吸光度")]
+                               limit=f"< {DETECTION_LIMIT} mg/L",
+                               hj_ref="实验室内部质控",
+                               detail="未填写全程序空白吸光度（HJ 535-2009 未强制要求，建议每批做一个）")]
 
         a = record.calibration_curve.regression_a
         b = record.calibration_curve.regression_b
 
         if a is None or b is None:
             return [self._warning(name="全程序空白", actual="校准曲线未回归",
-                                  limit=f"< {DETECTION_LIMIT} mg/L", hj_ref="7.2")]
+                                  limit=f"< {DETECTION_LIMIT} mg/L",
+                                  hj_ref="实验室内部质控")]
 
-        blank_conc = calc_concentration(record.field_blank_absorbance, 0, a, b, SAMPLE_VOLUME)
+        blank_conc = calc_concentration(record.field_blank_absorbance,
+                                          record.lab_blank_absorbance or 0,
+                                          a, b, SAMPLE_VOLUME)
 
         if blank_conc < DETECTION_LIMIT:
             return [self._pass(name="全程序空白", actual=f"{blank_conc:.4f} mg/L",
-                              limit=f"< {DETECTION_LIMIT} mg/L", hj_ref="7.2")]
+                              limit=f"< {DETECTION_LIMIT} mg/L",
+                              hj_ref="实验室内部质控",
+                              detail="全程序空白合格，采样/运输/前处理过程未引入氨污染")]
         return [self._fail(name="全程序空白", actual=f"{blank_conc:.4f} mg/L",
-                          limit=f"< {DETECTION_LIMIT} mg/L", hj_ref="7.2",
+                          limit=f"< {DETECTION_LIMIT} mg/L",
+                          hj_ref="实验室内部质控",
                           detail="全程序空白浓度高于方法检出限，可能存在交叉污染",
                           suggestion="检查采样、运输和前处理过程中是否存在氨污染")]

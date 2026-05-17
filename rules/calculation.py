@@ -1,6 +1,7 @@
 from models.record import AnalysisRecord
 from rules.base import BaseAuditRule
 from utils.regression import calc_concentration
+from config import DETECTION_LIMIT
 
 
 class FormulaVerificationRule(BaseAuditRule):
@@ -28,10 +29,19 @@ class FormulaVerificationRule(BaseAuditRule):
 
             expected = calc_concentration(s.absorbance, record.lab_blank_absorbance,
                                           a, b, s.sample_volume, s.dilution_factor)
+
+            # Below detection limit — recorded as reporting limit (e.g. 0.025L),
+            # so formula verification is meaningless (actual value is <0.025)
+            if (s.calculated_conc <= DETECTION_LIMIT or expected <= DETECTION_LIMIT):
+                if '空白' in s.sample_name or 'blank' in s.sample_name.lower():
+                    continue  # blanks have their own check (C1/C2/C3)
+                if abs(expected - s.calculated_conc) <= DETECTION_LIMIT:
+                    continue  # within detection limit tolerance, no issue
+
             diff = abs(expected - s.calculated_conc)
             divisor = max(abs(expected), abs(s.calculated_conc), 0.001)
 
-            if diff / divisor > 0.05:  # 5% tolerance
+            if diff / divisor > 0.05:
                 items.append(self._fail(
                     name=f"样品 {s.sample_id} 计算",
                     actual=f"记录值={s.calculated_conc:.4f}",

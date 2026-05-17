@@ -44,7 +44,7 @@ class CalibrationPointsRule(BaseAuditRule):
 
 
 class CorrelationCoefficientRule(BaseAuditRule):
-    """B2: 相关系数 r ≥ 0.999"""
+    """B2: 相关系数 r ≥ 0.999，同时校核回归方程"""
     code = "B2"
     category = "校准曲线"
 
@@ -56,34 +56,67 @@ class CorrelationCoefficientRule(BaseAuditRule):
                               detail="无法计算相关系数，至少需要2个校准点")]
 
         x_vals = [p.nh3_mass for p in points]
-        # Use A-A0 values for regression (HJ 535-2009 uses A-A0)
         y_vals = [p.a_minus_a0 if p.a_minus_a0 is not None else p.absorbance
                   for p in points]
+
+        # Save PDF-extracted values before recomputing
+        extracted_a = record.calibration_curve.regression_a
+        extracted_b = record.calibration_curve.regression_b
+        extracted_r = record.calibration_curve.correlation_r
 
         a, b, r = linear_regression(x_vals, y_vals)
         record.calibration_curve.regression_a = a
         record.calibration_curve.regression_b = b
         record.calibration_curve.correlation_r = r
 
+        items = []
+
+        # Verify extracted regression matches computed values
+        if extracted_a is not None and extracted_b is not None:
+            a_diff = abs(a - extracted_a)
+            b_diff = abs(b - extracted_b)
+            if a_diff > 0.001 or b_diff > 0.0005:
+                items.append(self._fail(
+                    name="回归方程校核",
+                    actual=f"记录: y={extracted_b:.4f}x+{extracted_a:.4f}",
+                    limit=f"计算: y={b:.4f}x+{a:.4f}", hj_ref="7.1",
+                    detail="记录中的回归方程与根据校准点重新计算的结果不一致",
+                    suggestion="请检查原始记录中回归方程的计算或誊写是否有误"))
+            else:
+                items.append(self._pass(
+                    name="回归方程校核",
+                    actual=f"记录 y={extracted_b:.4f}x+{extracted_a:.4f} = 计算值",
+                    limit="记录与计算一致", hj_ref="7.1"))
+
         r_display = f"r={r:.5f}"
+        if extracted_r is not None and abs(r - extracted_r) > 0.001:
+            items.append(self._warning(
+                name="相关系数校核",
+                actual=f"记录 r={extracted_r}",
+                limit=f"计算 r={r:.5f}", hj_ref="7.1",
+                detail="记录的相关系数与重新计算结果有差异，可能是舍入误差"))
+
         if b <= 0:
-            return [self._fail(name="相关系数", actual=r_display,
-                              limit=f"r ≥ {MIN_CORRELATION_R}", hj_ref="7.1",
-                              detail="斜率为负值，标准曲线异常",
-                              suggestion="请检查标准溶液配制和仪器状态")]
+            items.append(self._fail(name="校准曲线斜率", actual=f"b={b:.5f}",
+                                    limit="b > 0", hj_ref="7.1",
+                                    detail="斜率为负值，标准曲线异常",
+                                    suggestion="请检查标准溶液配制和仪器状态"))
+            return items
 
         if r >= MIN_CORRELATION_R:
-            return [self._pass(name="相关系数", actual=r_display,
-                              limit=f"r ≥ {MIN_CORRELATION_R}", hj_ref="7.1")]
-        if r >= 0.995:
-            return [self._fail(name="相关系数", actual=r_display,
+            items.append(self._pass(name="相关系数", actual=r_display,
+                              limit=f"r ≥ {MIN_CORRELATION_R}", hj_ref="7.1"))
+        elif r >= 0.995:
+            items.append(self._fail(name="相关系数", actual=r_display,
                               limit=f"r ≥ {MIN_CORRELATION_R}", hj_ref="7.1",
                               detail="相关系数低于0.999，线性不够理想",
-                              suggestion="检查标准溶液稀释精度和比色皿清洁度")]
-        return [self._fail(name="相关系数", actual=r_display,
+                              suggestion="检查标准溶液稀释精度和比色皿清洁度"))
+        else:
+            items.append(self._fail(name="相关系数", actual=r_display,
                           limit=f"r ≥ {MIN_CORRELATION_R}", hj_ref="7.1",
                           detail="相关系数严重偏低，校准曲线不可用",
-                          suggestion="应重新配制标准系列，检查仪器并重测")]
+                          suggestion="应重新配制标准系列，检查仪器并重测"))
+        return items
 
 
 class RegressionInfoRule(BaseAuditRule):

@@ -415,8 +415,13 @@ def _join_name(parts):
         return ""
     result = parts[0]
     for p in parts[1:]:
-        # 如果当前片段很短(1-2字)且前一段以汉字结尾，直接拼接不加空格
-        if len(p) <= 2 and result and '一' <= result[-1] <= '鿿':
+        # If previous fragment ends with CJK char and next starts with CJK char,
+        # OR next fragment is short (1-2 chars) continuation — join without space.
+        prev_cjk = result and '一' <= result[-1] <= '鿿'
+        curr_cjk = p and '一' <= p[0] <= '鿿'
+        if prev_cjk and curr_cjk:
+            result += p
+        elif len(p) <= 2 and prev_cjk:
             result += p
         else:
             result += ' ' + p
@@ -424,15 +429,18 @@ def _join_name(parts):
 
 
 def _identify_qc_and_parallels(record):
-    """识别质控样和平行样"""
+    """识别质控样、全程序空白和平行样"""
     for s in record.samples:
         name = s.sample_name
+
+        # 全程序空白 / 现场空白
+        if '全程序空白' in name or '现场空白' in name:
+            record.field_blank_absorbance = s.absorbance
 
         # 质控样
         if any(kw in name for kw in ('质量控制', '密码标样', '明码标样')):
             certified = 0.0
             if s.calculated_conc and s.calculated_conc > 0:
-                # 从结果反推大致标准值（根据常见质控样推断）
                 conc = s.calculated_conc
                 for std in (1.21, 1.47, 0.501, 2.50):
                     if abs(conc - std) / std < 0.15:
@@ -446,30 +454,35 @@ def _identify_qc_and_parallels(record):
                 measured_value=s.calculated_conc,
             ))
 
-        # 平行样
-        if '平行' in name and '现场' not in name and '密码' not in name:
-            # 找到对应的原始样
-            base = name.replace('-实验室平行', '').replace('-现场平行', '').strip()
+        # 平行样 — normalize name (remove spaces from split CJK) for matching
+        name_normalized = name.replace(' ', '')
+
+        if '平行' in name_normalized and '现场' not in name_normalized and '密码' not in name_normalized:
+            base = name_normalized.replace('-实验室平行', '').replace('-现场平行', '').strip()
             for orig in record.samples:
-                if orig.sample_id != s.sample_id and '平行' not in orig.sample_name:
-                    if (base in orig.sample_name or orig.sample_name in base or
-                        orig.sample_id == s.sample_id.replace('-P', '')):
-                        if orig.calculated_conc is not None and s.calculated_conc is not None:
-                            record.parallels.append(ParallelSample(
-                                original_id=orig.sample_id,
-                                parallel_id=s.sample_id,
-                                value_a=orig.calculated_conc,
-                                value_b=s.calculated_conc,
-                            ))
-                            break
+                orig_normalized = orig.sample_name.replace(' ', '')
+                if '平行' in orig_normalized:
+                    continue
+                if (base in orig_normalized or orig_normalized in base
+                    or orig.sample_id == s.sample_id.replace('-P', '')):
+                    if orig.calculated_conc is not None and s.calculated_conc is not None:
+                        record.parallels.append(ParallelSample(
+                            original_id=orig.sample_id,
+                            parallel_id=s.sample_id,
+                            value_a=orig.calculated_conc,
+                            value_b=s.calculated_conc,
+                        ))
+                        break
 
     # 现场平行配对
     for s in record.samples:
-        if '现场平行' in s.sample_name:
-            base = s.sample_name.replace('-现场平行', '').strip()
+        name_normalized = s.sample_name.replace(' ', '')
+        if '现场平行' in name_normalized:
+            base = name_normalized.replace('-现场平行', '').strip()
             for orig in record.samples:
-                if orig.sample_id != s.sample_id and '平行' not in orig.sample_name:
-                    if base in orig.sample_name or orig.sample_name in base:
+                orig_normalized = orig.sample_name.replace(' ', '')
+                if orig.sample_id != s.sample_id and '平行' not in orig_normalized:
+                    if base in orig_normalized or orig_normalized in base:
                         already = any(p.original_id == orig.sample_id
                                       for p in record.parallels)
                         if not already and orig.calculated_conc is not None:
